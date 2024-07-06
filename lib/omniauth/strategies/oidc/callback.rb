@@ -58,7 +58,7 @@ module OmniAuth
 
           verify_id_token!(@access_token.id_token) if configured_response_type == "code"
 
-          user_info_from_access_token
+          options.fetch_user_info ? user_info_from_access_token : define_access_token
         end
 
         def id_token_callback_phase
@@ -95,6 +95,20 @@ module OmniAuth
             uid: user_data["sub"],
             info: { name: user_data["name"], email: user_data["email"] },
             extra: { raw_info: user_data },
+            credentials: {
+              id_token: @access_token.id_token,
+              token: @access_token.access_token,
+              refresh_token: @access_token.refresh_token,
+              expires_in: @access_token.expires_in,
+              scope: @access_token.scope
+            }
+          )
+          call_app!
+        end
+
+        def define_access_token
+          env["omniauth.auth"] = AuthHash.new(
+            provider: name,
             credentials: {
               id_token: @access_token.id_token,
               token: @access_token.access_token,
