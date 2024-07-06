@@ -20,3 +20,4 @@ test/version_tmp
 .tool-version
 .ruby-gemset
 Gemfile.lock
+.tool-versions

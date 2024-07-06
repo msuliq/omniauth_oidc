@@ -61,6 +61,7 @@ module OmniAuth
       option :id_token_hint
       option :acr_values
       option :send_nonce, true
+      option :fetch_user_info, true
       option :send_scope_to_token_endpoint, true
       option :client_auth_method
       option :post_logout_redirect_uri

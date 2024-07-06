@@ -4,6 +4,8 @@ This gem provides an OmniAuth strategy for integrating OpenID Connect (OIDC) aut
 
 Developed with reference to [omniauth-openid-connect](https://github.com/jjbohn/omniauth-openid-connect) and [omniauth_openid_connect](https://github.dev/omniauth/omniauth_openid_connect).
 
+[Article on Medium](https://msuliq.medium.com/authenticating-with-omniauth-and-openid-connect-oidc-in-ruby-on-rails-applications-e136ec5b48c0) about the development of this gem.
+
 ## Installation
 
 To install the gem run the following command in the terminal:
@@ -157,6 +159,48 @@ end
 **Please note that you should register `https://your_app.com/auth/<simple_provider>/callback` with your OIDC provider
 as a callback redirect url.**
 
+### Using Access Token Without User Info
+
+In case your app requries only an access token and not the user information, then you can specify an optional
+configuration in the omniauth initializer:
+
+```ruby
+# config/initializers/omniauth.rb
+Rails.application.config.middleware.use OmniAuth::Builder do
+  provider :oidc, {
+    name: :simple_provider_access_token_only,
+    fetch_user_info: false, # if not specified, default value of true will be applied
+    client_options: {
+      identifier: '23575f4602bebbd9a17dbc38d85bd1a77',
+      secret: ENV['SIMPLE_PROVIDER_CLIENT_SECRET'],
+      config_endpoint: 'https://simpleprovider.com/cdn-cgi/access/sso/oidc/23575f4602bebbd9a17dbc38d85bd1a77/.well-known/openid-configuration'
+    }
+  }
+end
+```
+
+Then the callback returned once your user authenticates with the OIDC provider will contain only access token parameters:
+
+```ruby
+# app/controllers/callbacks_controller.rb
+class CallbacksController < ApplicationController
+  def omniauth
+    # access token parameters received from OIDC provider will be available in `request.env['omniauth.auth']`
+    omniauth_params = request.env['omniauth.auth']
+
+    # omniauth_params will contain similar data as shown below
+    # {"provider"=>:simple_provider_access_token_only,
+    #  "credentials"=>
+    #   {"id_token"=> "id token value",
+    #    "token"=> "token value",
+    #    "refresh_token"=>"refresh token value",
+    #    "expires_in"=>300,
+    #    "scope"=>nil
+    #   }
+    # }
+  end
+end
+```
 
 ### Advanced Configuration
 You can customize the OIDC strategy further by adding additional configuration options:
@@ -165,6 +209,7 @@ You can customize the OIDC strategy further by adding additional configuration o
 |------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------|-------------------------------------|-------------------------------------------------------|
 | name                         | Arbitrary string to identify OIDC provider and segregate it from other OIDC providers                                                                                 | no                      | `"oidc"`                            | `:simple_provider`                                    |
 | issuer                       | Root url for the OIDC authorization server                                                                                                                            | no                      | retrived from config_endpoint       | `"https://simpleprovider.com"`                        |
+| fetch_user_info              | Fetches user information from user_info_endpoint using the access token. If set to false the omniauth params will include only access token                           | no                      | `true`                              | `fetch_user_info: false`                              |
 | client_auth_method           | Authentication method to be used with the OIDC authorization server                                                                                                   | no                      | `:basic`                            | `"basic"`, `"jwks"`                                   |
 | scope                        | OIDC scopes to be included in the server's response                                                                                                                   | `[:openid]` is required | all scopes offered by OIDC provider | `[:openid, :profile, :email]`                         |
 | response_type                | OAuth2 response type expected from OIDC provider during authorization                                                                                                 | no                      | `"code"`                            | `"code"` or `"id_token"`                              |
