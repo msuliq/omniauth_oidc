@@ -1,5 +1,8 @@
 ## [Released]
 
+## [0.2.0] - 2024-07-21
+- Update dependencies
+
 ## [0.2.0] - 2024-07-06
 - Add option to fetch user info or skip it
 
