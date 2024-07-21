@@ -30,7 +30,7 @@ module OmniAuth
         private
 
         def fetch_key
-          @fetch_key ||= parse_jwk_key(::OpenIDConnect.http_client.get(config.jwks_uri).body)
+          @fetch_key ||= parse_jwk_key(::Oidc.http_client.get(config.jwks_uri).body)
         end
 
         def base64_decoded_jwt_secret
@@ -47,7 +47,6 @@ module OmniAuth
                                             nonce: params["nonce"].presence || stored_nonce)
         end
 
-        # Workaround for https://github.com/nov/openid_connect/issues/61
         def decode_id_token(id_token)
           decoded = JSON::JWT.decode(id_token, :skip_verification)
           algorithm = decoded.algorithm.to_sym
@@ -63,7 +62,7 @@ module OmniAuth
             end
 
           decoded.verify!(keyset)
-          ::OpenIDConnect::ResponseObject::IdToken.new(decoded)
+          ::Oidc::ResponseObject::IdToken.new(decoded)
         rescue JSON::JWK::Set::KidNotFound
           # Workaround for https://github.com/nov/json-jwt/pull/92#issuecomment-824654949
           raise if decoded&.header&.key?("kid")
@@ -88,7 +87,7 @@ module OmniAuth
         end
 
         def decode!(id_token, key)
-          ::OpenIDConnect::ResponseObject::IdToken.decode(id_token, key)
+          ::Oidc::ResponseObject::IdToken.decode(id_token, key)
         end
 
         def decode_with_each_key!(id_token, keyset)
@@ -140,7 +139,7 @@ module OmniAuth
           if access_token.id_token
             decoded = decode_id_token(access_token.id_token).raw_attributes
 
-            @user_info = ::OpenIDConnect::ResponseObject::UserInfo.new(
+            @user_info = ::Oidc::ResponseObject::UserInfo.new(
               access_token.userinfo!.raw_attributes.merge(decoded)
             )
           else

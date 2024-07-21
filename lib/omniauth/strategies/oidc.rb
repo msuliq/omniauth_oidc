@@ -5,7 +5,7 @@ require "timeout"
 require "net/http"
 require "open-uri"
 require "omniauth"
-require "openid_connect"
+require "oidc"
 require "openid_config_parser"
 require "forwardable"
 require "httparty"
@@ -112,9 +112,9 @@ module OmniAuth
         }
       end
 
-      # Initialize OpenIDConnect Client with options
+      # Initialize Oidc Client with options
       def client
-        @client ||= ::OpenIDConnect::Client.new(client_options)
+        @client ||= ::Oidc::Client.new(client_options)
       end
 
       # Config is build from the json response from the OIDC config endpoint
