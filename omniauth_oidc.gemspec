@@ -33,9 +33,9 @@ Gem::Specification.new do |spec|
 
   # Uncomment to register a new dependency of your gem
   spec.add_dependency "httparty"
-  spec.add_dependency "oidc"
   spec.add_dependency "omniauth"
   spec.add_dependency "openid_config_parser"
+  spec.add_dependency "openid_connect"
 
   # For more information and examples about making a new gem, check out our
   # guide at: https://bundler.io/guides/creating_gem.html

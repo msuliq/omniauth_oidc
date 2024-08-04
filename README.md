@@ -91,6 +91,7 @@ end
 ```
 
 Ensure to replace identifier, secret, configuration endpoint url and others with credentials received from your OIDC provider.
+Please note that the gem does not accept `redirect_uri` as a configurable option. For details please see section Routes.
 
 ### Redirecting for Authentication
 
@@ -125,15 +126,20 @@ end
 
 ### Routes
 
-The gem uses dynamic routes when making requests to the OIDC provider endpoints. These routes follow the naming pattern
-of `https://your_app.com/auth/<simple_provider>/callback`, where `<simple_provider>` is the provider name defined
-within the configuration of the `omniauth.rb` initializer.
+The gem uses dynamic routes when making requests to the OIDC provider endpoints, so called `redirect_uri` which is a
+non-configurable value that follows the naming pattern of `https://your_app.com/auth/<simple_provider>/callback`, 
+where `<simple_provider>` is the provider name defined within the configuration of the `omniauth.rb` initializer.
+This represents the `redirect_uri` that will be passed with the authorization request to your OIDC provider and that
+has to be registered with your OIDC provider as permitted `redirect_uri`.
 
 Dynamic routes are used to process responses and perform intermediary steps by the middleware, e.g. request phase,
-token verification. While you can define and use same routes within your Rails app, you can modify your `routes.rb`
-to perform a dynamic redirect to a another controller method. In an example below, all OIDC responses are ultimately
-redirected to the `omniauth` method of the `callbacks_controller`, which is a universal method to handle authentication
-with various omniauth providers:
+token verification. While you can define and use same routes within your Rails app, it is highly recommended to modify 
+your `routes.rb` to perform a dynamic redirect to a another controller method so this does not cause any conflicts with
+the middleware or the authorization flow.
+
+In an example below, `auth/:provider/callback` is generalized `redirect_uri` value that is passed in the authorization
+flow, while all OIDC provider responses are ultimately redirected to the `omniauth` method of the `callbacks_controller`,
+which could be a "Swiss army knife" method to handle authentication or user data from various omniauth providers:
 
 ```ruby
 # config/routes.rb
@@ -201,6 +207,41 @@ class CallbacksController < ApplicationController
   end
 end
 ```
+
+### Ending Session
+
+The gem provides two configuration options to allow ending a session simultaneously with your client application and the
+OIDC provider.
+
+To use this feature, you need to provide a `logout_path` in the options and an `end_session_endpoint` in the client 
+options. Here’s a sample setup:
+
+``` ruby
+  provider :oidc, {
+    name: :simple_provider,
+    client_options: {
+      identifier: ENV['SIMPLE_PROVIDER_CLIENT_ID'],
+      secret: ENV['SIMPLE_PROVIDER_SECRET'],
+      config_endpoint: 'https://simpleprovider.com/1234567890/.well-known/openid-configuration',
+      end_session_endpoint: 'https://simpleprovider.com/signout' # URL to end session with OIDC provider
+    },
+    logout_path: '/logout' # path in your application to end user session
+  }
+```
+
+* `end_session_endpoint` is the URL to which your client app can redirect to log out the user from the OIDC provider's application. It can be dynamically fetched from the `config_endpoint` response if your OIDC provider specifies it there. Alternatively, you can explicitly provide it in the client options.
+
+* `logout_path` is the URL in your application that can be called to terminate the current user's session.
+
+Using these two configurations, you can ensure that when a user logs out from your application, they are also logged out
+from the OIDC provider, providing a seamless logout across multiple services.
+
+This works by calling `other_phase` on every request in your application, which checks if the requested URL matches the 
+defined `logout_path`. If it does, meaning that the current user has requested to log out from your application, 
+`other_phase` redirects to the `end_session_endpoin`t to terminate the user's session with the OIDC provider if such a 
+session exists. Then it returns back to your application and concludes the request to end the session.
+
+For additional details please refer to the [OIDC specification](https://openid.net/specs/openid-connect-session-1_0-17.html#:~:text=%C2%A0TOC-,5.%C2%A0%20RP%2DInitiated%20Logout,-An%20RP%20can).
 
 ### Advanced Configuration
 You can customize the OIDC strategy further by adding additional configuration options:
