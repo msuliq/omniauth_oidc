@@ -5,7 +5,7 @@ require "timeout"
 require "net/http"
 require "open-uri"
 require "omniauth"
-require "oidc"
+require "openid_connect"
 require "openid_config_parser"
 require "forwardable"
 require "httparty"
@@ -112,9 +112,9 @@ module OmniAuth
         }
       end
 
-      # Initialize Oidc Client with options
+      # Initialize OpenIDConnect Client with options
       def client
-        @client ||= ::Oidc::Client.new(client_options)
+        @client ||= ::OpenIDConnect::Client.new(client_options)
       end
 
       # Config is build from the json response from the OIDC config endpoint
@@ -127,8 +127,9 @@ module OmniAuth
         @config ||= OpenidConfigParser.fetch_openid_configuration(client_options.config_endpoint)
       end
 
+      # Detects if current request is for the logout url and makes a redirect to end session with OIDC provider
       def other_phase
-        if logout_path_pattern.match?(current_path)
+        if logout_path_pattern.match?(request.url)
           options.issuer = issuer if options.issuer.to_s.empty?
 
           return redirect(end_session_uri) if end_session_uri
@@ -136,6 +137,7 @@ module OmniAuth
         call_app!
       end
 
+      # URL to end authenticated user's session with OIDC provider
       def end_session_uri
         return unless end_session_endpoint_is_valid?
 
@@ -205,7 +207,7 @@ module OmniAuth
       end
 
       def logout_path_pattern
-        @logout_path_pattern ||= /\A#{Regexp.quote(request_path)}#{options.logout_path}/
+        @logout_path_pattern ||= /\A#{Regexp.quote(request.base_url)}#{options.logout_path}/
       end
 
       # Strips port and host from strings with OIDC endpoints

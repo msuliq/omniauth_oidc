@@ -62,7 +62,7 @@ module OmniAuth
             end
 
           decoded.verify!(keyset)
-          ::Oidc::ResponseObject::IdToken.new(decoded)
+          ::OpenIDConnect::ResponseObject::IdToken.new(decoded)
         rescue JSON::JWK::Set::KidNotFound
           # Workaround for https://github.com/nov/json-jwt/pull/92#issuecomment-824654949
           raise if decoded&.header&.key?("kid")
@@ -87,7 +87,7 @@ module OmniAuth
         end
 
         def decode!(id_token, key)
-          ::Oidc::ResponseObject::IdToken.decode(id_token, key)
+          ::OpenIDConnect::ResponseObject::IdToken.decode(id_token, key)
         end
 
         def decode_with_each_key!(id_token, keyset)
@@ -139,7 +139,7 @@ module OmniAuth
           if access_token.id_token
             decoded = decode_id_token(access_token.id_token).raw_attributes
 
-            @user_info = ::Oidc::ResponseObject::UserInfo.new(
+            @user_info = ::OpenIDConnect::ResponseObject::UserInfo.new(
               access_token.userinfo!.raw_attributes.merge(decoded)
             )
           else
