@@ -236,10 +236,10 @@ options. Here’s a sample setup:
 Using these two configurations, you can ensure that when a user logs out from your application, they are also logged out
 from the OIDC provider, providing a seamless logout across multiple services.
 
-This works by calling `other_phase` on every request in your application, which checks if the requested URL matches the 
-defined `logout_path`. If it does, meaning that the current user has requested to log out from your application, 
-`other_phase` redirects to the `end_session_endpoin`t to terminate the user's session with the OIDC provider if such a 
-session exists. Then it returns back to your application and concludes the request to end the session.
+This works by calling `other_phase` on every controller request in your application. The method checks if the requested 
+URL matches the defined `logout_path`. If it does (i.e. current user has requested to log out from your application) 
+`other_phase` performs a redirect to the `end_session_endpoint` to terminate the user's session with the OIDC provider 
+and then it returns back to your application and concludes the request to end the current user's session.
 
 For additional details please refer to the [OIDC specification](https://openid.net/specs/openid-connect-session-1_0-17.html#:~:text=%C2%A0TOC-,5.%C2%A0%20RP%2DInitiated%20Logout,-An%20RP%20can).
 

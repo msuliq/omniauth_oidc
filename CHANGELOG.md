@@ -1,5 +1,8 @@
 ## [Released]
 
+## [0.2.3] - 2024-08-04
+- Update readme
+
 ## [0.2.2] - 2024-08-04
 - Update dependencies, update documentation, fix end_session_uri, update other_phase
 
