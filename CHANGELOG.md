@@ -1,5 +1,8 @@
 ## [Released]
 
+## [0.2.4] - 2024-09-28
+- Fix bug with configurable scopes
+
 ## [0.2.3] - 2024-08-04
 - Update readme
 
