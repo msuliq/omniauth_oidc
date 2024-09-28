@@ -48,7 +48,7 @@ module OmniAuth
       option :jwt_secret_base64
       option :client_jwk_signing_key
       option :client_x509_signing_key
-      option :scope, [:openid]
+      option :scope, nil
       option :response_type, "code" # ['code', 'id_token']
       option :require_state, true
       option :state
@@ -158,7 +158,7 @@ module OmniAuth
 
       # By default Returns all scopes supported by the OIDC provider
       def scope
-        config.scopes_supported || options.scope
+        options.scope || config.scopes_supported || [:open_id]
       end
 
       def authorization_code
