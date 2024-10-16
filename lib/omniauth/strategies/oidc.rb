@@ -30,7 +30,7 @@ module OmniAuth
 
       def_delegator :request, :params
 
-      option :name, "oidc"                                  # to separate each oidc provider available in the app
+      option :name, :oidc                                   # to separate each oidc provider available in the app
       option(:client_options, identifier: nil,              # client id, required
                               secret: nil,                  # client secret, required
                               host: nil,                    # oidc provider host, optional

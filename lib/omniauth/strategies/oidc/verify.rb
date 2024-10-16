@@ -30,7 +30,7 @@ module OmniAuth
         private
 
         def fetch_key
-          @fetch_key ||= parse_jwk_key(::Oidc.http_client.get(config.jwks_uri).body)
+          @fetch_key ||= parse_jwk_key(::OpenIDConnect.http_client.get(config.jwks_uri).body)
         end
 
         def base64_decoded_jwt_secret

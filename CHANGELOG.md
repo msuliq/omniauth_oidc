@@ -1,5 +1,8 @@
 ## [Released]
 
+## [0.2.5] - 2024-10-16
+- Fix for uninitialized constant Oidc in strategy.rb:163
+
 ## [0.2.4] - 2024-09-28
 - Fix bug with configurable scopes
 
