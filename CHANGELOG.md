@@ -1,5 +1,8 @@
 ## [Released]
 
+## [0.2.6] - 2024-10-16
+- Fix for callback_phase initializing twice
+
 ## [0.2.5] - 2024-10-16
 - Fix for uninitialized constant Oidc in strategy.rb:163
 
