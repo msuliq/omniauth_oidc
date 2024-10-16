@@ -26,7 +26,6 @@ module OmniAuth
           client.authorization_code = authorization_code
 
           access_token
-          super
         rescue CallbackError => e
           fail!(e.error, e)
         rescue ::Rack::OAuth2::Client::Error => e
