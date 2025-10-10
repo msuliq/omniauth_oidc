@@ -1,5 +1,8 @@
 ## [Released]
 
+## [0.2.7] - 2024-10-11
+- Dependencies update
+
 ## [0.2.6] - 2024-10-16
 - Fix for callback_phase initializing twice
 
