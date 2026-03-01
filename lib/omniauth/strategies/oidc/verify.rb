@@ -27,10 +27,27 @@ module OmniAuth
                           end
         end
 
+        # Force refresh JWKS cache and retry verification
+        def public_key_with_refresh
+          OmniauthOidc::Logging.info("Force refreshing JWKS cache")
+          OmniauthOidc::JwksCache.invalidate(config.jwks_uri)
+          @public_key = nil
+          @fetch_key = nil
+          public_key
+        end
+
         private
 
         def fetch_key
-          @fetch_key ||= parse_jwk_key(::OpenIDConnect.http_client.get(config.jwks_uri).body)
+          @fetch_key ||= OmniauthOidc::JwksCache.instance.fetch(config.jwks_uri) do
+            OmniauthOidc::Logging.instrument("jwks.fetch", jwks_uri: config.jwks_uri) do
+              response = OmniauthOidc::HttpClient.get(config.jwks_uri)
+              OmniauthOidc::JwkHandler.parse_jwks(response)
+            end
+          end
+        rescue StandardError => e
+          OmniauthOidc::Logging.error("Failed to fetch JWKS", error: e.message, jwks_uri: config.jwks_uri)
+          raise OmniauthOidc::JwksFetchError, "Failed to fetch JWKS from #{config.jwks_uri}: #{e.message}"
         end
 
         def base64_decoded_jwt_secret
@@ -42,36 +59,109 @@ module OmniAuth
         def verify_id_token!(id_token)
           return unless id_token
 
-          decode_id_token(id_token).verify!(issuer: config.issuer,
-                                            client_id: client_options.identifier,
-                                            nonce: params["nonce"].presence || stored_nonce)
+          OmniauthOidc::Logging.instrument("id_token.verify", provider: name) do
+            decoded = decode_id_token(id_token)
+            verify_claims!(decoded)
+            decoded
+          end
+        end
+
+        def verify_claims!(decoded_token) # rubocop:disable Metrics/MethodLength
+          claims = decoded_token.raw_attributes
+
+          # Verify issuer
+          if config.issuer && claims["iss"] != config.issuer
+            raise OmniauthOidc::InvalidIssuerError,
+                  "Issuer mismatch. Expected: #{config.issuer}, Got: #{claims["iss"]}"
+          end
+
+          # Verify audience
+          audience = claims["aud"]
+          expected_aud = client_options.identifier
+          unless audience_matches?(audience, expected_aud)
+            raise OmniauthOidc::InvalidAudienceError,
+                  "Audience mismatch. Expected: #{expected_aud}, Got: #{audience}"
+          end
+
+          # Verify nonce if present
+          expected_nonce = params["nonce"].presence || stored_nonce
+          if expected_nonce && claims["nonce"] != expected_nonce
+            raise OmniauthOidc::InvalidNonceError,
+                  "Nonce mismatch. Expected: #{expected_nonce}, Got: #{claims["nonce"]}"
+          end
+
+          # Verify expiration
+          if claims["exp"] && Time.at(claims["exp"].to_i) < Time.now
+            raise OmniauthOidc::TokenExpiredError,
+                  "Token expired at #{Time.at(claims["exp"].to_i)}"
+          end
+
+          decoded_token
+        end
+
+        def audience_matches?(audience, expected)
+          return audience == expected if audience.is_a?(String)
+          return audience.include?(expected) if audience.is_a?(Array)
+
+          false
         end
 
         def decode_id_token(id_token)
-          decoded = JSON::JWT.decode(id_token, :skip_verification)
-          algorithm = decoded.algorithm.to_sym
+          # First decode without verification to get the algorithm and kid
+          _unverified_payload, unverified_header = JWT.decode(id_token, nil, false)
+          algorithm = unverified_header["alg"]
+          kid = unverified_header["kid"]
 
-          validate_client_algorithm!(algorithm)
+          validate_client_algorithm!(algorithm.to_sym)
 
-          keyset =
-            case algorithm
-            when :HS256, :HS384, :HS512
-              secret
+          # Get the appropriate key/secret for verification
+          key = keyset_for_algorithm(algorithm.to_sym, kid)
+
+          # Decode and verify
+          verify_signature!(id_token, key, algorithm)
+        rescue JWT::DecodeError => e
+          raise OmniauthOidc::TokenVerificationError, "Invalid JWT format: #{e.message}"
+        end
+
+        def keyset_for_algorithm(algorithm, kid = nil)
+          case algorithm
+          when :HS256, :HS384, :HS512
+            secret
+          else
+            keys = public_key
+            if keys.is_a?(Array)
+              OmniauthOidc::JwkHandler.find_key(keys, kid)
             else
-              public_key
+              keys
             end
+          end
+        end
 
-          decoded.verify!(keyset)
-          ::OpenIDConnect::ResponseObject::IdToken.new(decoded)
-        rescue JSON::JWK::Set::KidNotFound
-          # Workaround for https://github.com/nov/json-jwt/pull/92#issuecomment-824654949
-          raise if decoded&.header&.key?("kid")
+        def verify_signature!(id_token, key, algorithm)
+          # Use jwt gem to decode and verify
+          payload, _header = JWT.decode(
+            id_token,
+            key,
+            true, # verify signature
+            {
+              algorithm: algorithm,
+              verify_expiration: false # We verify this manually in verify_claims!
+            }
+          )
 
-          decoded = decode_with_each_key!(id_token, keyset)
-
-          raise unless decoded
-
-          decoded
+          # Create our custom IdToken object
+          OmniauthOidc::ResponseObjects::IdToken.new(payload.merge("algorithm" => algorithm))
+        rescue JWT::VerificationError => e
+          # Try refreshing JWKS cache and retry once
+          if key.is_a?(Array) && !@signature_retry_attempted
+            @signature_retry_attempted = true
+            OmniauthOidc::Logging.warn("Signature verification failed, refreshing JWKS and retrying")
+            refreshed_key = public_key_with_refresh
+            return verify_signature!(id_token, refreshed_key, algorithm)
+          end
+          raise OmniauthOidc::InvalidSignatureError, "JWT signature verification failed: #{e.message}"
+        rescue JWT::IncorrectAlgorithm => e
+          raise OmniauthOidc::InvalidAlgorithmError, "Unexpected JWT algorithm: #{e.message}"
         end
 
         # Check for jwt to match defined client_signing_alg
@@ -81,33 +171,9 @@ module OmniAuth
           return unless client_signing_alg
           return if algorithm == client_signing_alg
 
-          reason = "Received JWT is signed with #{algorithm}, but client_singing_alg is \
-            configured for #{client_signing_alg}"
-          raise CallbackError, error: :invalid_jwt_algorithm, reason: reason, uri: params["error_uri"]
-        end
-
-        def decode!(id_token, key)
-          ::OpenIDConnect::ResponseObject::IdToken.decode(id_token, key)
-        end
-
-        def decode_with_each_key!(id_token, keyset)
-          return unless keyset.is_a?(JSON::JWK::Set)
-
-          keyset.each do |key|
-            begin
-              decoded = decode!(id_token, key)
-            rescue JSON::JWS::VerificationFailed, JSON::JWS::UnexpectedAlgorithm, JSON::JWK::UnknownAlgorithm
-              next
-            end
-
-            return decoded if decoded
-          end
-
-          nil
-        end
-
-        def stored_nonce
-          session.delete("omniauth.nonce")
+          reason = "Received JWT is signed with #{algorithm}, but client_signing_alg is " \
+                   "configured for #{client_signing_alg}"
+          raise OmniauthOidc::InvalidAlgorithmError, reason
         end
 
         def configured_public_key
@@ -120,31 +186,15 @@ module OmniAuth
 
         def parse_x509_key(key)
           OpenSSL::X509::Certificate.new(key).public_key
+        rescue OpenSSL::X509::CertificateError => e
+          raise OmniauthOidc::TokenVerificationError, "Invalid X.509 certificate: #{e.message}"
         end
 
         def parse_jwk_key(key)
           json = key.is_a?(String) ? JSON.parse(key) : key
-          return JSON::JWK::Set.new(json["keys"]) if json.key?("keys")
-
-          JSON::JWK.new(json)
-        end
-
-        def decode(str)
-          UrlSafeBase64.decode64(str).unpack1("B*").to_i(2).to_s
-        end
-
-        def user_info
-          return @user_info if @user_info
-
-          if access_token.id_token
-            decoded = decode_id_token(access_token.id_token).raw_attributes
-
-            @user_info = ::OpenIDConnect::ResponseObject::UserInfo.new(
-              access_token.userinfo!.raw_attributes.merge(decoded)
-            )
-          else
-            @user_info = access_token.userinfo!
-          end
+          OmniauthOidc::JwkHandler.parse_jwks(json)
+        rescue JSON::ParserError => e
+          raise OmniauthOidc::TokenVerificationError, "Invalid JWK format: #{e.message}"
         end
       end
     end

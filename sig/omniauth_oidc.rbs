@@ -1,4 +1,195 @@
 module OmniauthOidc
   VERSION: String
-  # See the writing guide of rbs: https://github.com/ruby/rbs#guides
+
+  # Errors
+  class Error < RuntimeError
+  end
+
+  class MissingCodeError < Error
+  end
+
+  class MissingIdTokenError < Error
+  end
+
+  class ConfigurationError < Error
+  end
+
+  class MissingConfigurationError < ConfigurationError
+  end
+
+  class TokenError < Error
+  end
+
+  class TokenVerificationError < TokenError
+  end
+
+  class TokenExpiredError < TokenError
+  end
+
+  class InvalidAlgorithmError < TokenError
+  end
+
+  class InvalidSignatureError < TokenError
+  end
+
+  class InvalidIssuerError < TokenError
+  end
+
+  class InvalidAudienceError < TokenError
+  end
+
+  class InvalidNonceError < TokenError
+  end
+
+  class JwksError < Error
+  end
+
+  class JwksFetchError < JwksError
+  end
+
+  class KeyNotFoundError < JwksError
+  end
+
+  # HTTP Client
+  class HttpClient
+    class HttpError < StandardError
+    end
+
+    MAX_REDIRECTS: Integer
+
+    def self.get: (String url, ?headers: Hash[String, String]) -> Hash[String, untyped]
+    def self.post: (String url, ?body: String?, ?headers: Hash[String, String]) -> Hash[String, untyped]
+  end
+
+  # OIDC Client
+  class Client
+    attr_accessor identifier: String?
+    attr_accessor secret: String?
+    attr_accessor authorization_endpoint: String?
+    attr_accessor token_endpoint: String?
+    attr_accessor userinfo_endpoint: String?
+    attr_accessor host: String?
+    attr_accessor redirect_uri: String?
+
+    def initialize: (?Hash[Symbol | String, untyped] options) -> void
+    def authorization_uri: (?Hash[Symbol, untyped] params) -> String
+    def access_token!: (?Hash[Symbol, untyped] params) -> ResponseObjects::AccessToken
+    def userinfo!: (String access_token) -> ResponseObjects::UserInfo
+  end
+
+  # JWK Handler
+  class JwkHandler
+    class KeyWithId
+      attr_accessor kid: String?
+      attr_accessor keypair: OpenSSL::PKey::PKey
+
+      def initialize: (?kid: String?, ?keypair: OpenSSL::PKey::PKey) -> void
+    end
+
+    def self.parse_jwks: (String | Hash[String, untyped] | nil jwks_data) -> Array[KeyWithId]?
+    def self.jwk_to_key: (Hash[String, untyped] jwk_data) -> KeyWithId?
+    def self.find_key: (Array[KeyWithId] keys, ?String? kid) -> OpenSSL::PKey::PKey?
+  end
+
+  # JWKS Cache
+  class JwksCache
+    DEFAULT_TTL: Integer
+
+    class CacheEntry
+      attr_accessor keys: untyped
+      attr_accessor fetched_at: Time
+
+      def initialize: (?keys: untyped, ?fetched_at: Time) -> void
+    end
+
+    def self.instance: () -> JwksCache
+    def self.clear!: () -> void
+    def self.invalidate: (String jwks_uri) -> void
+
+    attr_reader ttl: Integer
+
+    def initialize: (?ttl: Integer) -> void
+    def fetch: (String jwks_uri, ?force_refresh: bool) { () -> untyped } -> untyped
+    def valid?: (String jwks_uri) -> bool
+    def invalidate: (String jwks_uri) -> void
+    def clear!: () -> void
+    def ttl=: (Integer value) -> void
+  end
+
+  # Config Fetcher
+  class ConfigFetcher
+    class Config
+      def initialize: (?Hash[Symbol | String, untyped] attributes) -> void
+      def []: (String | Symbol key) -> untyped
+      def []=: (String | Symbol key, untyped value) -> untyped
+      def respond_to_missing?: (Symbol method_name, ?bool include_private) -> bool
+    end
+
+    def self.fetch: (String endpoint_url, ?max_retries: Integer) -> Config
+  end
+
+  # Response Objects
+  module ResponseObjects
+    class IdToken
+      attr_reader raw_attributes: Hash[String, untyped]
+
+      def initialize: (?Hash[String, untyped] attributes) -> void
+      def sub: () -> String?
+      def iss: () -> String?
+      def aud: () -> (String | Array[String])?
+      def exp: () -> Integer?
+      def iat: () -> Integer?
+      def nonce: () -> String?
+    end
+
+    class UserInfo
+      attr_reader raw_attributes: Hash[String, untyped]
+
+      def initialize: (?Hash[String, untyped] attributes) -> void
+      def sub: () -> String?
+      def name: () -> String?
+      def given_name: () -> String?
+      def family_name: () -> String?
+      def middle_name: () -> String?
+      def nickname: () -> String?
+      def preferred_username: () -> String?
+      def profile: () -> String?
+      def picture: () -> String?
+      def website: () -> String?
+      def email: () -> String?
+      def email_verified: () -> bool?
+      def gender: () -> String?
+      def birthdate: () -> String?
+      def zoneinfo: () -> String?
+      def locale: () -> String?
+      def phone_number: () -> String?
+      def phone_number_verified: () -> bool?
+      def address: () -> Hash[String, untyped]?
+      def updated_at: () -> Integer?
+    end
+
+    class AccessToken
+      attr_reader access_token: String?
+      attr_reader token_type: String?
+      attr_reader expires_in: Integer?
+      attr_reader refresh_token: String?
+      attr_reader scope: String?
+      attr_reader id_token: String?
+
+      def initialize: (?Hash[String | Symbol, untyped] attributes) -> void
+      def to_h: () -> Hash[String, untyped]
+    end
+  end
+
+  # Logging
+  module Logging
+    def self.logger: () -> Logger
+    def self.logger=: (Logger logger) -> void
+    def self.log_level=: (Integer level) -> void
+    def self.instrument: (String event_name, ?Hash[Symbol, untyped] payload) ?{ (Hash[Symbol, untyped]) -> untyped } -> untyped
+    def self.debug: (String message, ?Hash[Symbol, untyped] context) -> void
+    def self.info: (String message, ?Hash[Symbol, untyped] context) -> void
+    def self.warn: (String message, ?Hash[Symbol, untyped] context) -> void
+    def self.error: (String message, ?Hash[Symbol, untyped] context) -> void
+  end
 end

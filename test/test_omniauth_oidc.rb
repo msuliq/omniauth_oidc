@@ -7,7 +7,28 @@ class TestOmniauthOidc < Minitest::Test
     refute_nil ::OmniauthOidc::VERSION
   end
 
-  def test_it_does_something_useful
-    assert true
+  def test_version_is_one_zero_zero
+    assert_equal "1.0.0", ::OmniauthOidc::VERSION
+  end
+
+  def test_error_hierarchy
+    assert OmniauthOidc::MissingCodeError < OmniauthOidc::Error
+    assert OmniauthOidc::MissingIdTokenError < OmniauthOidc::Error
+    assert OmniauthOidc::TokenError < OmniauthOidc::Error
+    assert OmniauthOidc::TokenVerificationError < OmniauthOidc::TokenError
+    assert OmniauthOidc::ConfigurationError < OmniauthOidc::Error
+  end
+
+  def test_logging_module_exists
+    assert defined?(OmniauthOidc::Logging)
+    assert OmniauthOidc::Logging.respond_to?(:logger)
+    assert OmniauthOidc::Logging.respond_to?(:instrument)
+  end
+
+  def test_jwks_cache_exists
+    assert defined?(OmniauthOidc::JwksCache)
+    instance = OmniauthOidc::JwksCache.instance
+    assert instance.respond_to?(:fetch)
+    assert instance.respond_to?(:clear!)
   end
 end

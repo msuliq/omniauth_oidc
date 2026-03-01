@@ -10,9 +10,13 @@ end
 
 gemspec
 
+# Ruby 4.0+ compatibility
+gem "ostruct" if Gem::Version.new(RUBY_VERSION) >= Gem::Version.new("4.0.0")
+
 group :development, :test do
   gem "bundle-audit"
   gem "minitest"
+  gem "rack-test"
   gem "rake"
   gem "rubocop"
   gem "webmock"
