@@ -3,67 +3,138 @@
 module OmniAuth
   module Strategies
     class Oidc
-      # Callback phase
-      module Callback
-        def callback_phase # rubocop:disable Metrics
-          error = params["error_reason"] || params["error"]
-          error_description = params["error_description"] || params["error_reason"]
-          invalid_state = (options.require_state && params["state"].to_s.empty?) || params["state"] != stored_state
+      # Callback phase - handles OIDC provider response
+      module Callback # rubocop:disable Metrics/ModuleLength
+        def callback_phase
+          OmniauthOidc::Logging.instrument("callback_phase.start", provider: name) do
+            handle_callback_errors do
+              validate_callback_params!
 
-          raise CallbackError, error: params["error"], reason: error_description, uri: params["error_uri"] if error
-          raise CallbackError, error: :csrf_detected, reason: "Invalid 'state' parameter" if invalid_state
+              options.issuer = issuer if options.issuer.nil? || options.issuer.empty?
 
-          return unless valid_response_type?
+              verify_id_token!(params["id_token"]) if configured_response_type == "id_token"
 
-          options.issuer = issuer if options.issuer.nil? || options.issuer.empty?
+              client.redirect_uri = redirect_uri
 
-          verify_id_token!(params["id_token"]) if configured_response_type == "id_token"
+              if configured_response_type == "id_token"
+                handle_id_token_response
+              else
+                handle_code_response
+              end
 
-          client.redirect_uri = redirect_uri
-
-          return id_token_callback_phase if configured_response_type == "id_token"
-
-          client.authorization_code = authorization_code
-
-          access_token
-        rescue CallbackError => e
-          fail!(e.error, e)
-        rescue ::Rack::OAuth2::Client::Error => e
-          fail!(e.response[:error], e)
-        rescue ::Timeout::Error, ::Errno::ETIMEDOUT => e
-          fail!(:timeout, e)
-        rescue ::SocketError => e
-          fail!(:failed_to_connect, e)
+              super
+            end
+          end
         end
 
         private
 
-        def access_token
-          return @access_token if @access_token
-
-          token_request_params = {
-            scope: (scope if options.send_scope_to_token_endpoint),
-            client_auth_method: options.client_auth_method
-          }
-
-          if options.pkce
-            token_request_params[:code_verifier] =
-              params["code_verifier"] || session.delete("omniauth.pkce.verifier")
-          end
-
-          set_client_options_for_callback_phase
-
-          @access_token = client.access_token!(token_request_params)
-
-          verify_id_token!(@access_token.id_token) if configured_response_type == "code"
-
-          options.fetch_user_info ? user_info_from_access_token : define_access_token
+        def handle_callback_errors
+          yield
+        rescue CallbackError => e
+          OmniauthOidc::Logging.error("Callback error", error: e.error, reason: e.error_reason)
+          fail!(e.error, e)
+        rescue OmniauthOidc::TokenError => e
+          OmniauthOidc::Logging.error("Token error", error: e.class.name, message: e.message)
+          fail!(:token_error, e)
+        rescue OmniauthOidc::HttpClient::HttpError => e
+          OmniauthOidc::Logging.error("HTTP error", message: e.message)
+          fail!(:http_error, e)
+        rescue ::Timeout::Error, ::Errno::ETIMEDOUT => e
+          OmniauthOidc::Logging.error("Timeout error", message: e.message)
+          fail!(:timeout, e)
+        rescue ::SocketError => e
+          OmniauthOidc::Logging.error("Connection error", message: e.message)
+          fail!(:failed_to_connect, e)
         end
 
-        def id_token_callback_phase
-          user_data = decode_id_token(params["id_token"]).raw_attributes
+        def validate_callback_params! # rubocop:disable Naming/PredicateMethod
+          error = params["error_reason"] || params["error"]
+          error_description = params["error_description"] || params["error_reason"]
+          invalid_state = (options.require_state && params["state"].to_s.empty?) || params["state"] != stored_state
 
-          define_user_info(user_data)
+          if error
+            raise CallbackError, error: params["error"], error_reason: error_description,
+                                 error_uri: params["error_uri"]
+          end
+          raise CallbackError, error: :csrf_detected, error_reason: "Invalid 'state' parameter" if invalid_state
+
+          valid_response_type?
+        end
+
+        def handle_code_response
+          # Get access token via token exchange
+          @access_token = fetch_access_token
+
+          # Verify the ID token from the token response
+          verify_id_token!(@access_token.id_token) if @access_token.id_token
+
+          # Fetch and set user info
+          @user_info = fetch_user_info
+        end
+
+        def handle_id_token_response
+          # For id_token response type, extract user data directly from the token
+          decoded_token = decode_id_token(params["id_token"])
+          @user_info = OmniauthOidc::ResponseObjects::UserInfo.new(decoded_token.raw_attributes)
+
+          # Create a minimal access token structure for credentials
+          @access_token = OmniauthOidc::ResponseObjects::AccessToken.new(
+            id_token: params["id_token"],
+            access_token: nil,
+            refresh_token: nil,
+            expires_in: nil,
+            scope: nil
+          )
+        end
+
+        def fetch_access_token
+          OmniauthOidc::Logging.instrument("token.exchange", provider: name) do
+            token_request_params = {
+              code: authorization_code,
+              redirect_uri: redirect_uri
+            }
+
+            if options.pkce
+              token_request_params[:code_verifier] =
+                params["code_verifier"] || session.delete(session_key("pkce.verifier"))
+            end
+
+            set_client_options_for_callback_phase
+
+            client.access_token!(token_request_params)
+          end
+        end
+
+        def fetch_user_info
+          return minimal_user_info_from_token unless options.fetch_user_info
+
+          OmniauthOidc::Logging.instrument("userinfo.fetch", provider: name) do
+            # Use our custom client to fetch userinfo
+            userinfo_data = client.userinfo!(@access_token.access_token).raw_attributes
+
+            # Merge with ID token claims if available
+            if @access_token.id_token
+              id_token_claims = decode_id_token(@access_token.id_token).raw_attributes
+              userinfo_data = id_token_claims.merge(userinfo_data)
+            end
+
+            OmniauthOidc::ResponseObjects::UserInfo.new(userinfo_data)
+          end
+        rescue StandardError => e
+          OmniauthOidc::Logging.warn("Failed to fetch userinfo, falling back to ID token", error: e.message)
+          minimal_user_info_from_token
+        end
+
+        def minimal_user_info_from_token
+          return empty_user_info unless @access_token&.id_token
+
+          decoded = decode_id_token(@access_token.id_token)
+          OmniauthOidc::ResponseObjects::UserInfo.new(decoded.raw_attributes)
+        end
+
+        def empty_user_info
+          OmniauthOidc::ResponseObjects::UserInfo.new({})
         end
 
         def valid_response_type?
@@ -75,50 +146,6 @@ module OmniAuth
           false
         end
 
-        def user_info_from_access_token
-          user_data = HTTParty.get(
-            config.userinfo_endpoint, {
-              headers: {
-                "Authorization" => "Bearer #{@access_token}",
-                "Content-Type" => "application/json"
-              }
-            }
-          )
-
-          define_user_info(user_data.parsed_response)
-        end
-
-        def define_user_info(user_data)
-          env["omniauth.auth"] = AuthHash.new(
-            provider: name,
-            uid: user_data["sub"],
-            info: { name: user_data["name"], email: user_data["email"] },
-            extra: { raw_info: user_data },
-            credentials: {
-              id_token: @access_token.id_token,
-              token: @access_token.access_token,
-              refresh_token: @access_token.refresh_token,
-              expires_in: @access_token.expires_in,
-              scope: @access_token.scope
-            }
-          )
-          call_app!
-        end
-
-        def define_access_token
-          env["omniauth.auth"] = AuthHash.new(
-            provider: name,
-            credentials: {
-              id_token: @access_token.id_token,
-              token: @access_token.access_token,
-              refresh_token: @access_token.refresh_token,
-              expires_in: @access_token.expires_in,
-              scope: @access_token.scope
-            }
-          )
-          call_app!
-        end
-
         def configured_response_type
           @configured_response_type ||= options.response_type.to_s
         end
@@ -127,9 +154,19 @@ module OmniAuth
         def set_client_options_for_callback_phase
           client.host = host
           client.redirect_uri = redirect_uri
-          client.authorization_endpoint = resolve_endpoint_from_host(host, config.authorization_endpoint)
-          client.token_endpoint = resolve_endpoint_from_host(host, config.token_endpoint)
-          client.userinfo_endpoint = resolve_endpoint_from_host(host, config.userinfo_endpoint)
+          client.authorization_endpoint = config.authorization_endpoint
+          client.token_endpoint = config.token_endpoint
+          client.userinfo_endpoint = config.userinfo_endpoint
+        end
+
+        # Accessor for OmniAuth DSL blocks
+        def user_info
+          @user_info
+        end
+
+        # Accessor for OmniAuth DSL blocks
+        def access_token
+          @access_token
         end
       end
     end

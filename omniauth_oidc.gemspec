@@ -18,6 +18,7 @@ Gem::Specification.new do |spec|
   spec.metadata["homepage_uri"] = spec.homepage
   spec.metadata["source_code_uri"] = "https://github.com/msuliq/omniauth_oidc"
   spec.metadata["changelog_uri"] = "https://github.com/msuliq/omniauth_oidc/blob/main/CHANGELOG.md"
+  spec.metadata["rubygems_mfa_required"] = "true"
 
   # Specify which files should be added to the gem when it is released.
   # The `git ls-files -z` loads the files in the RubyGem that have been added into git.
@@ -31,11 +32,12 @@ Gem::Specification.new do |spec|
   spec.executables = spec.files.grep(%r{\Aexe/}) { |f| File.basename(f) }
   spec.require_paths = ["lib"]
 
-  # Uncomment to register a new dependency of your gem
-  spec.add_dependency "httparty"
-  spec.add_dependency "omniauth"
-  spec.add_dependency "openid_config_parser"
-  spec.add_dependency "openid_connect"
+  # Runtime dependencies
+  spec.add_dependency "jwt", "~> 2.7"
+  spec.add_dependency "omniauth", "~> 2.1"
+
+  # Ruby 4.0+ compatibility - ostruct no longer in default gems
+  # Users on Ruby 4.0+ should add 'gem "ostruct"' to their Gemfile
 
   # For more information and examples about making a new gem, check out our
   # guide at: https://bundler.io/guides/creating_gem.html

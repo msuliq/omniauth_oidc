@@ -6,15 +6,16 @@ module OmniAuth
       # Code request phase
       module Request
         def request_phase
-          @identifier = client_options.identifier
-          @secret = secret
+          OmniauthOidc::Logging.instrument("request_phase.start", provider: name) do
+            @identifier = client_options.identifier
+            @secret = secret
 
-          set_client_options_for_request_phase
-          redirect authorize_uri
+            set_client_options_for_request_phase
+            redirect authorize_uri
+          end
         end
 
         def authorize_uri # rubocop:disable Metrics/AbcSize
-          client.redirect_uri = redirect_uri
           opts = request_options
 
           opts.merge!(options.extra_authorize_params) unless options.extra_authorize_params.empty?
@@ -27,10 +28,14 @@ module OmniAuth
             verifier = options.pkce_verifier ? options.pkce_verifier.call : SecureRandom.hex(64)
 
             opts.merge!(pkce_authorize_params(verifier))
-            session["omniauth.pkce.verifier"] = verifier
+            session[session_key("pkce.verifier")] = verifier
           end
 
-          client.authorization_uri(opts.reject { |_k, v| v.nil? })
+          # Add redirect_uri and extra_params to opts
+          opts[:redirect_uri] = redirect_uri
+          opts[:extra_params] = opts.compact
+
+          client.authorization_uri(opts)
         end
 
         private
@@ -59,21 +64,20 @@ module OmniAuth
                       options.state.call
                     end
                   end
-          session["omniauth.state"] = state || SecureRandom.hex(16)
+          session[session_key("state")] = state || SecureRandom.hex(16)
         end
 
         # Parse response from OIDC endpoint and set client options for request phase
-        def set_client_options_for_request_phase # rubocop:disable Metrics/AbcSize
+        def set_client_options_for_request_phase
           client_options.host = host
-          client_options.authorization_endpoint = resolve_endpoint_from_host(host, config.authorization_endpoint)
-          client_options.token_endpoint = resolve_endpoint_from_host(host, config.token_endpoint)
-          client_options.userinfo_endpoint = resolve_endpoint_from_host(host, config.userinfo_endpoint)
-          client_options.jwks_uri = resolve_endpoint_from_host(host, config.jwks_uri)
+          client_options.authorization_endpoint = config.authorization_endpoint
+          client_options.token_endpoint = config.token_endpoint
+          client_options.userinfo_endpoint = config.userinfo_endpoint
+          client_options.jwks_uri = config.jwks_uri
 
-          return unless config.respond_to?(:end_session_endpoint)
+          return unless config.respond_to?(:end_session_endpoint) && config.end_session_endpoint
 
-          client_options.end_session_endpoint = resolve_endpoint_from_host(host,
-                                                                           config.end_session_endpoint)
+          client_options.end_session_endpoint = config.end_session_endpoint
         end
       end
     end

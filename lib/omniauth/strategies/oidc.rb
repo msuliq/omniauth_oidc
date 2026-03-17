@@ -5,16 +5,19 @@ require "timeout"
 require "net/http"
 require "open-uri"
 require "omniauth"
-require "openid_connect"
-require "openid_config_parser"
 require "forwardable"
-require "httparty"
+require "jwt"
+require "ostruct"
+require "openssl"
 
-Dir[File.join(File.dirname(__FILE__), "oidc", "*.rb")].sort.each { |file| require_relative file }
+# Explicit requires instead of Dir glob for clarity and load order control
+require_relative "oidc/request"
+require_relative "oidc/callback"
+require_relative "oidc/verify"
 
 module OmniAuth
   module Strategies
-    # OIDC strategy for omniauth
+    # OIDC strategy for OmniAuth
     class Oidc
       include OmniAuth::Strategy
       include Request
@@ -27,6 +30,8 @@ module OmniAuth
         "id_token" => { exception_class: OmniauthOidc::MissingIdTokenError, key: :missing_id_token }.freeze,
         "code" => { exception_class: OmniauthOidc::MissingCodeError, key: :missing_code }.freeze
       }.freeze
+
+      REQUIRED_OPTIONS = %i[identifier secret config_endpoint].freeze
 
       def_delegator :request, :params
 
@@ -79,6 +84,9 @@ module OmniAuth
 
       option :logout_path, "/logout"
 
+      # JWKS cache configuration
+      option :jwks_cache_ttl, 3600 # 1 hour default
+
       def uid
         user_info.raw_attributes[options.uid_field.to_sym] || user_info.sub
       end
@@ -104,27 +112,44 @@ module OmniAuth
 
       credentials do
         {
-          id_token: access_token.id_token,
-          token: access_token.access_token,
-          refresh_token: access_token.refresh_token,
-          expires_in: access_token.expires_in,
-          scope: access_token.scope
+          id_token: access_token&.id_token,
+          token: access_token&.access_token,
+          refresh_token: access_token&.refresh_token,
+          expires_in: access_token&.expires_in,
+          scope: access_token&.scope
         }
       end
 
-      # Initialize OpenIDConnect Client with options
+      # Initialize our custom OIDC Client with options
       def client
-        @client ||= ::OpenIDConnect::Client.new(client_options)
+        @client ||= begin
+          set_client_endpoints
+          OmniauthOidc::Client.new(
+            identifier: client_options.identifier,
+            secret: client_options.secret,
+            authorization_endpoint: client_options.authorization_endpoint,
+            token_endpoint: client_options.token_endpoint,
+            userinfo_endpoint: client_options.userinfo_endpoint,
+            redirect_uri: redirect_uri
+          )
+        end
       end
 
-      # Config is build from the json response from the OIDC config endpoint
-      def config
-        unless client_options.config_endpoint || params["config_endpoint"]
-          raise Error,
-                "Configuration endpoint is missing from options"
-        end
+      def set_client_endpoints
+        client_options.authorization_endpoint ||= config.authorization_endpoint
+        client_options.token_endpoint ||= config.token_endpoint
+        client_options.userinfo_endpoint ||= config.userinfo_endpoint
+        client_options.jwks_uri ||= config.jwks_uri
+        client_options.end_session_endpoint ||= config.end_session_endpoint
+      end
 
-        @config ||= OpenidConfigParser.fetch_openid_configuration(client_options.config_endpoint)
+      # Config is built from the json response from the OIDC config endpoint
+      def config
+        validate_configuration!
+
+        @config ||= OmniauthOidc::Logging.instrument("config.fetch", config_endpoint: client_options.config_endpoint) do
+          OmniauthOidc::ConfigFetcher.fetch(client_options.config_endpoint)
+        end
       end
 
       # Detects if current request is for the logout url and makes a redirect to end session with OIDC provider
@@ -148,6 +173,18 @@ module OmniAuth
 
       private
 
+      def validate_configuration!
+        missing = []
+        missing << :identifier if client_options.identifier.to_s.empty?
+        missing << :secret if client_options.secret.to_s.empty?
+        missing << :config_endpoint if client_options.config_endpoint.to_s.empty?
+
+        return if missing.empty?
+
+        raise OmniauthOidc::MissingConfigurationError,
+              "Missing required configuration: #{missing.join(", ")}"
+      end
+
       def issuer
         @issuer ||= config.issuer
       end
@@ -158,7 +195,8 @@ module OmniAuth
 
       # By default Returns all scopes supported by the OIDC provider
       def scope
-        options.scope || config.scopes_supported || [:open_id]
+        value = options.scope || config.scopes_supported || [:openid]
+        value.is_a?(Array) ? value.join(" ") : value
       end
 
       def authorization_code
@@ -169,12 +207,21 @@ module OmniAuth
         options.client_options
       end
 
+      # Session key helpers with provider namespacing
+      def session_key(suffix)
+        "omniauth.#{name}.#{suffix}"
+      end
+
       def stored_state
-        session.delete("omniauth.state")
+        session.delete(session_key("state"))
       end
 
       def new_nonce
-        session["omniauth.nonce"] = SecureRandom.hex(16)
+        session[session_key("nonce")] = SecureRandom.hex(16)
+      end
+
+      def stored_nonce
+        session.delete(session_key("nonce"))
       end
 
       def script_name
@@ -210,14 +257,6 @@ module OmniAuth
         @logout_path_pattern ||= /\A#{Regexp.quote(request.base_url)}#{options.logout_path}/
       end
 
-      # Strips port and host from strings with OIDC endpoints
-      def resolve_endpoint_from_host(host, endpoint)
-        start_index = endpoint.index(host) + host.length
-        endpoint = endpoint[start_index..]
-        endpoint = "/#{endpoint}" unless endpoint.start_with?("/")
-        endpoint
-      end
-
       # Override for the CallbackError class
       class CallbackError < StandardError
         attr_accessor :error, :error_reason, :error_uri
@@ -225,8 +264,8 @@ module OmniAuth
         def initialize(data)
           super
           self.error = data[:error]
-          self.error_reason = data[:reason]
-          self.error_uri = data[:uri]
+          self.error_reason = data[:error_reason] || data[:reason]
+          self.error_uri = data[:error_uri] || data[:uri]
         end
 
         def message

@@ -7,10 +7,10 @@ jobs:
   rubocop:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "2.7.0"
+          ruby-version: "3.3"
           bundler-cache: true
       - run: bundle exec rubocop
   test:
@@ -18,16 +18,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ruby: ["2.7.0", "3.2.1"]
+        ruby: ["2.7.0", "3.2.1", "4.0.1"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
       - name: Bundle audit
-        run: bundle exec bundle-audit --update
-      - name: Install dependencies
-        run: bundle install
+        run: bundle exec bundle-audit check --update
       - name: Run tests
         run: bundle exec rake test

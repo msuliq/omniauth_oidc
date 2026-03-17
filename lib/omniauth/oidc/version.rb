@@ -1,5 +1,5 @@
 # frozen_string_literal: true
 
 module OmniauthOidc
-  VERSION = "0.2.7"
+  VERSION = "1.0.0"
 end
