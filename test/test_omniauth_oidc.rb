@@ -8,7 +8,7 @@ class TestOmniauthOidc < Minitest::Test
   end
 
   def test_version_is_one_zero_zero
-    assert_equal "1.0.0", ::OmniauthOidc::VERSION
+    assert_equal "1.0.1", ::OmniauthOidc::VERSION
   end
 
   def test_error_hierarchy

@@ -1,5 +1,9 @@
 ## [Released]
 
+## [1.0.1] - 2026-03-23
+
+- Update jwt dependency
+
 ## [1.0.0] - 2026-03-02
 
 ### BREAKING CHANGES
