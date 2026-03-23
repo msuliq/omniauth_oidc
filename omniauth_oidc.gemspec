@@ -33,7 +33,7 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
 
   # Runtime dependencies
-  spec.add_dependency "jwt", "~> 2.7"
+  spec.add_dependency "jwt", ">= 2.7", "< 4.0"
   spec.add_dependency "omniauth", "~> 2.1"
 
   # Ruby 4.0+ compatibility - ostruct no longer in default gems
