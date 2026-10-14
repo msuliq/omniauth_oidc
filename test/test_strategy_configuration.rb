@@ -5,11 +5,6 @@ require "test_helper"
 class TestStrategyConfiguration < Minitest::Test
   include OmniAuthTestHelper
 
-  def setup
-    OmniauthOidc::JwksCache.clear!
-    WebMock.reset!
-  end
-
   def test_required_configuration_validation
     strategy = OmniAuth::Strategies::Oidc.new(app, client_options: {})
 
@@ -69,7 +64,7 @@ class TestStrategyConfiguration < Minitest::Test
   def test_config_fetch_success
     stub_oidc_config_request
 
-    strategy = OmniAuth::Strategies::Oidc.new(app, test_strategy_options)
+    strategy = OmniAuth::Strategies::Oidc.new(app, strategy_options)
     config = strategy.send(:config)
 
     assert_equal "https://example.com", config.issuer
@@ -78,7 +73,7 @@ class TestStrategyConfiguration < Minitest::Test
   end
 
   def test_session_key_namespacing
-    strategy = OmniAuth::Strategies::Oidc.new(app, test_strategy_options.merge(name: :custom_provider))
+    strategy = OmniAuth::Strategies::Oidc.new(app, strategy_options.merge(name: :custom_provider))
 
     key = strategy.send(:session_key, "state")
     assert_equal "omniauth.custom_provider.state", key
@@ -90,7 +85,7 @@ class TestStrategyConfiguration < Minitest::Test
   def test_default_scope
     stub_oidc_config_request
 
-    strategy = OmniAuth::Strategies::Oidc.new(app, test_strategy_options)
+    strategy = OmniAuth::Strategies::Oidc.new(app, strategy_options)
     scope = strategy.send(:scope)
 
     assert_equal "openid profile email", scope
@@ -99,49 +94,83 @@ class TestStrategyConfiguration < Minitest::Test
   def test_custom_scope
     stub_oidc_config_request
 
-    strategy = OmniAuth::Strategies::Oidc.new(app, test_strategy_options.merge(scope: %w[openid custom]))
+    strategy = OmniAuth::Strategies::Oidc.new(app, strategy_options.merge(scope: %w[openid custom]))
     scope = strategy.send(:scope)
 
     assert_equal "openid custom", scope
   end
 
   def test_uid_field_default
-    strategy = OmniAuth::Strategies::Oidc.new(app, test_strategy_options)
+    strategy = OmniAuth::Strategies::Oidc.new(app, strategy_options)
     assert_equal "sub", strategy.options.uid_field
   end
 
-  def test_uid_field_custom
-    strategy = OmniAuth::Strategies::Oidc.new(app, test_strategy_options.merge(uid_field: "email"))
-    assert_equal "email", strategy.options.uid_field
+  def test_uid_field_custom_logs_deprecation_and_uid_stays_sub
+    log = capture_log do
+      strategy = OmniAuth::Strategies::Oidc.new(app, strategy_options.merge(uid_field: "email"))
+      strategy.instance_variable_set(:@user_info, OmniauthOidc::ResponseObjects::UserInfo.new(
+                                                    "sub" => "user123", "email" => "test@example.com"
+                                                  ))
+
+      assert_equal "user123", strategy.uid
+    end
+    assert_match(/uid_field option is deprecated/, log)
+  end
+
+  def test_uid_field_default_logs_nothing
+    log = capture_log { OmniAuth::Strategies::Oidc.new(app, strategy_options.merge(uid_field: "sub")) }
+    refute_match(/uid_field/, log)
   end
 
   def test_jwks_cache_ttl_default
-    strategy = OmniAuth::Strategies::Oidc.new(app, test_strategy_options)
+    strategy = OmniAuth::Strategies::Oidc.new(app, strategy_options)
     assert_equal 3600, strategy.options.jwks_cache_ttl
   end
 
   def test_jwks_cache_ttl_custom
-    strategy = OmniAuth::Strategies::Oidc.new(app, test_strategy_options.merge(jwks_cache_ttl: 7200))
+    strategy = OmniAuth::Strategies::Oidc.new(app, strategy_options.merge(jwks_cache_ttl: 7200))
     assert_equal 7200, strategy.options.jwks_cache_ttl
   end
 
-  def test_pkce_disabled_by_default
-    strategy = OmniAuth::Strategies::Oidc.new(app, test_strategy_options)
-    refute strategy.options.pkce
-  end
-
-  def test_pkce_can_be_enabled
-    strategy = OmniAuth::Strategies::Oidc.new(app, test_strategy_options.merge(pkce: true))
+  def test_pkce_enabled_by_default
+    strategy = OmniAuth::Strategies::Oidc.new(app, strategy_options)
     assert strategy.options.pkce
   end
 
+  def test_pkce_can_be_disabled
+    strategy = OmniAuth::Strategies::Oidc.new(app, strategy_options.merge(pkce: false))
+    refute strategy.options.pkce
+  end
+
+  def test_clock_skew_leeway_default
+    strategy = OmniAuth::Strategies::Oidc.new(app, strategy_options)
+    assert_equal 60, strategy.options.clock_skew_leeway
+  end
+
+  def test_discovery_cache_ttl_default
+    strategy = OmniAuth::Strategies::Oidc.new(app, strategy_options)
+    assert_equal 3600, strategy.options.discovery_cache_ttl
+  end
+
   def test_send_nonce_enabled_by_default
-    strategy = OmniAuth::Strategies::Oidc.new(app, test_strategy_options)
+    strategy = OmniAuth::Strategies::Oidc.new(app, strategy_options)
     assert strategy.options.send_nonce
   end
 
   def test_fetch_user_info_enabled_by_default
-    strategy = OmniAuth::Strategies::Oidc.new(app, test_strategy_options)
+    strategy = OmniAuth::Strategies::Oidc.new(app, strategy_options)
     assert strategy.options.fetch_user_info
+  end
+
+  private
+
+  def capture_log
+    original = OmniauthOidc::Logging.logger
+    output = StringIO.new
+    OmniauthOidc::Logging.logger = Logger.new(output)
+    yield
+    output.string
+  ensure
+    OmniauthOidc::Logging.logger = original
   end
 end

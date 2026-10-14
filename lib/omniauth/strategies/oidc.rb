@@ -72,8 +72,8 @@ module OmniAuth
       option :post_logout_redirect_uri
       option :extra_authorize_params, {}
       option :allow_authorize_params, []
-      option :uid_field, "sub"
-      option :pkce, false
+      option :uid_field, "sub" # Deprecated: never had an effect, the uid is always `sub`. Removed in 2.0.0
+      option :pkce, true
       option :pkce_verifier, nil
       option :pkce_options, {
         code_challenge: proc { |verifier|
@@ -84,11 +84,21 @@ module OmniAuth
 
       option :logout_path, "/logout"
 
-      # JWKS cache configuration
-      option :jwks_cache_ttl, 3600 # 1 hour default
+      # JWKS and discovery document cache TTLs in seconds
+      option :jwks_cache_ttl, OmniauthOidc::JwksCache::DEFAULT_TTL
+      option :discovery_cache_ttl, OmniauthOidc::ConfigFetcher::DEFAULT_CACHE_TTL
 
+      # Seconds of clock drift tolerated when checking ID token exp and nbf
+      option :clock_skew_leeway, 60
+
+      def initialize(app, *args, &block)
+        super
+        warn_uid_field_deprecation
+      end
+
+      # Always the subject claim: the only identifier OIDC guarantees to be stable and unique per issuer
       def uid
-        user_info.raw_attributes[options.uid_field.to_sym] || user_info.sub
+        user_info.sub
       end
 
       info do
@@ -143,12 +153,15 @@ module OmniAuth
         client_options.end_session_endpoint ||= config.end_session_endpoint
       end
 
-      # Config is built from the json response from the OIDC config endpoint
+      # Config is built from the json response from the OIDC config endpoint.
+      # OmniAuth dups the strategy per request, so the process-wide cache is what avoids
+      # refetching the discovery document on every request.
       def config
         validate_configuration!
 
-        @config ||= OmniauthOidc::Logging.instrument("config.fetch", config_endpoint: client_options.config_endpoint) do
-          OmniauthOidc::ConfigFetcher.fetch(client_options.config_endpoint)
+        endpoint = client_options.config_endpoint
+        @config ||= OmniauthOidc::Logging.instrument("config.fetch", config_endpoint: endpoint) do
+          OmniauthOidc::ConfigFetcher.fetch_cached(endpoint, ttl: options.discovery_cache_ttl.to_i)
         end
       end
 
@@ -172,6 +185,13 @@ module OmniAuth
       end
 
       private
+
+      def warn_uid_field_deprecation
+        return if options.uid_field.to_s == "sub"
+
+        OmniauthOidc::Logging.warn("The uid_field option is deprecated and has no effect: the uid is always the " \
+                                   "sub claim. Remove it from the #{name} provider; it is removed in 2.0.0.")
+      end
 
       def validate_configuration!
         missing = []

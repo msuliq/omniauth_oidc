@@ -3,6 +3,7 @@
 require_relative "omniauth/oidc/version"
 require_relative "omniauth/oidc/errors"
 require_relative "omniauth/oidc/logging"
+require_relative "omniauth/oidc/ttl_cache"
 require_relative "omniauth/oidc/jwks_cache"
 require_relative "omniauth/oidc/http_client"
 require_relative "omniauth/oidc/response_objects"

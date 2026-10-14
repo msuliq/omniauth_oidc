@@ -1,5 +1,46 @@
 ## [Released]
 
+## [1.1.0] - 2026-10-14
+
+### Security
+- **ID token algorithm no longer taken from the token header**: Previously, with `client_signing_alg` unset (the default), the gem verified an ID token with whatever algorithm its own header named. An unsigned `alg: none` token was accepted, which allowed forging a login for any `sub` in the `response_type: "id_token"` flow. Accepted algorithms now come from `client_signing_alg`, otherwise the discovery document's `id_token_signing_alg_values_supported`, otherwise `RS256`. `none` is always rejected. Raises `OmniauthOidc::InvalidAlgorithmError`.
+- **Empty HMAC secret refused**: A `jwt_secret_base64` that decodes to an empty string is rejected with `OmniauthOidc::ConfigurationError` instead of being used as the HS256/384/512 key (CVE-2026-45363).
+- **jwt dependency**: Now requires `jwt >= 2.10.3` and excludes 3.0.0 to 3.1.2, the releases affected by CVE-2026-45363.
+- **Nonce read from session only**: The expected nonce is no longer taken from the callback's request params, which the caller controls. It now comes only from the value stored in the session during the request phase. This also removes a call to ActiveSupport's `presence`, which raised `NoMethodError` in non-Rails apps.
+- **Nonce required when one was sent**: With `send_nonce: true` (the default), a callback whose session holds no nonce now fails with `OmniauthOidc::InvalidNonceError` instead of skipping the check. The `response_type: "id_token"` flow always sends and requires a nonce, as OIDC Core 3.2.2.1 requires. The nonce is consumed before any other claim check, so it stays single use even when verification fails, and its value is no longer written to error messages.
+- **PKCE verifier read from session only**: The `code_verifier` is no longer taken from callback request params. With PKCE on, a callback whose session holds no verifier fails with `OmniauthOidc::TokenError`.
+- **Issuer check cannot be skipped**: A discovery document with a missing or `null` `issuer` previously disabled the `iss` check (or crashed with `NoMethodError`). Discovery documents without `issuer` or `authorization_endpoint` are now rejected with `OmniauthOidc::ConfigurationError`.
+- **`exp` claim required**: ID tokens without an `exp` claim, or with a non-numeric one, are now rejected with `OmniauthOidc::TokenVerificationError`, as OIDC Core 3.1.3.7 requires.
+- **UserInfo `sub` must match the ID token**: A UserInfo response whose `sub` differs from the ID token's is ignored, and the login uses the ID token claims only (OIDC Core 5.3.4).
+- **Login without a subject fails**: A callback that cannot determine a `sub` now fails with `OmniauthOidc::TokenVerificationError` instead of completing with a `nil` uid.
+- **Safer HTTP redirects**: Redirects from HTTPS to HTTP are refused, and the `Authorization` header is dropped when a redirect leaves the original host, so a UserInfo access token cannot leak to another host or over cleartext.
+
+### Changed
+- **PKCE is enabled by default** (`pkce: true`). Authorization servers that do not support PKCE ignore the extra parameters (RFC 6749 3.1). Set `pkce: false` to opt out.
+- **Discovery document cached across requests**: OmniAuth copies the strategy for every request, so the discovery document was fetched on every request and callback. It is now cached per process for `discovery_cache_ttl` seconds (default `3600`, `0` disables). Failed fetches are not cached.
+- **Concurrent cache access**: The JWKS cache no longer holds a global lock during network fetches. A slow JWKS endpoint for one provider no longer blocks cache hits for every other provider, and concurrent misses for the same URI trigger a single fetch.
+- **HTTP timeouts**: Requests to the provider now time out after 5 seconds to connect and 10 seconds to read, instead of the 60 second `Net::HTTP` defaults.
+- **Fewer signature checks**: The ID token is verified once per callback and the result is reused, instead of being decoded and verified up to three times.
+- **Configuration and JWKS errors no longer return 500**: `OmniauthOidc::ConfigurationError` and `OmniauthOidc::JwksError` raised during the request or callback phase are passed to OmniAuth's failure handler with the `configuration_error` or `jwks_error` key.
+
+### Added
+- **`clock_skew_leeway` option** (default `60` seconds): Tolerates clock drift between the app and the provider when checking the ID token `exp` and `nbf` claims. Set to `0` for the previous strict behavior. Values other than a non-negative Integer raise `OmniauthOidc::ConfigurationError`.
+- **`discovery_cache_ttl` option** (default `3600` seconds).
+
+### Fixed
+- **`jwks_cache_ttl` was ignored**: The option is now applied to the JWKS cache.
+- **Signing key rotation**: An ID token whose `kid` is not in the cached JWKS now triggers a JWKS refresh, rate limited to once per minute per JWKS URI. Previously the refresh path never ran, and logins failed until the cache expired.
+- **Missing `code` or `id_token` in the callback**: The failure response is now returned immediately, instead of being discarded while the callback continued to the token endpoint.
+- **Discovery documents without optional fields**: A missing `userinfo_endpoint`, `end_session_endpoint` or `scopes_supported` no longer raises `NoMethodError`.
+
+### Deprecated
+- **`uid_field` option**: It has never had an effect. The uid has always been the `sub` claim, the only identifier OIDC guarantees to be stable and unique per issuer, and that does not change. Setting `uid_field` to anything other than `"sub"` now logs a deprecation warning. The option will be removed in 2.0.0.
+
+### Upgrade notes
+- Logins that are in progress during the upgrade (request phase on 1.0.x, callback on 1.1.0) fail once, because the session holds no PKCE verifier. Users can simply sign in again.
+- Apps that set `require_state: false` to accept IdP-initiated logins also need `send_nonce: false`, since no nonce is stored for a login the app did not start.
+- If a provider signs ID tokens with an algorithm it does not advertise in its discovery document, set `client_signing_alg` explicitly.
+
 ## [1.0.1] - 2026-03-23
 
 - Update jwt dependency

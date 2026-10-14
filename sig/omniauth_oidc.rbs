@@ -56,6 +56,9 @@ module OmniauthOidc
     end
 
     MAX_REDIRECTS: Integer
+    OPEN_TIMEOUT: Integer
+    READ_TIMEOUT: Integer
+    WRITE_TIMEOUT: Integer
 
     def self.get: (String url, ?headers: Hash[String, String]) -> Hash[String, untyped]
     def self.post: (String url, ?body: String?, ?headers: Hash[String, String]) -> Hash[String, untyped]
@@ -91,41 +94,60 @@ module OmniauthOidc
     def self.find_key: (Array[KeyWithId] keys, ?String? kid) -> OpenSSL::PKey::PKey?
   end
 
-  # JWKS Cache
-  class JwksCache
-    DEFAULT_TTL: Integer
-
-    class CacheEntry
-      attr_accessor keys: untyped
+  # Thread-safe TTL cache
+  class TtlCache
+    class Entry
+      attr_accessor value: untyped
       attr_accessor fetched_at: Time
 
-      def initialize: (?keys: untyped, ?fetched_at: Time) -> void
+      def initialize: (?value: untyped, ?fetched_at: Time) -> void
     end
+
+    attr_reader ttl: Numeric
+
+    def initialize: (ttl: Numeric, ?name: String) -> void
+    def fetch: (String key, ?force_refresh: bool, ?ttl: Numeric?, ?min_age: Numeric) { () -> untyped } -> untyped
+    def valid?: (String key) -> bool
+    def invalidate: (String key) -> void
+    def clear!: () -> void
+    def ttl=: (Numeric value) -> void
+  end
+
+  # JWKS Cache
+  class JwksCache < TtlCache
+    DEFAULT_TTL: Integer
 
     def self.instance: () -> JwksCache
     def self.clear!: () -> void
     def self.invalidate: (String jwks_uri) -> void
 
-    attr_reader ttl: Integer
-
-    def initialize: (?ttl: Integer) -> void
-    def fetch: (String jwks_uri, ?force_refresh: bool) { () -> untyped } -> untyped
-    def valid?: (String jwks_uri) -> bool
-    def invalidate: (String jwks_uri) -> void
-    def clear!: () -> void
-    def ttl=: (Integer value) -> void
+    def initialize: (?ttl: Numeric) -> void
   end
 
   # Config Fetcher
   class ConfigFetcher
+    DEFAULT_CACHE_TTL: Integer
+    STANDARD_FIELDS: Array[Symbol]
+    REQUIRED_FIELDS: Array[Symbol]
+
     class Config
       def initialize: (?Hash[Symbol | String, untyped] attributes) -> void
       def []: (String | Symbol key) -> untyped
       def []=: (String | Symbol key, untyped value) -> untyped
       def respond_to_missing?: (Symbol method_name, ?bool include_private) -> bool
+      def issuer: () -> String?
+      def authorization_endpoint: () -> String?
+      def token_endpoint: () -> String?
+      def userinfo_endpoint: () -> String?
+      def jwks_uri: () -> String?
+      def end_session_endpoint: () -> String?
+      def scopes_supported: () -> Array[String]?
+      def id_token_signing_alg_values_supported: () -> Array[String]?
     end
 
     def self.fetch: (String endpoint_url, ?max_retries: Integer) -> Config
+    def self.fetch_cached: (String endpoint_url, ?ttl: Numeric) -> Config
+    def self.clear_cache!: () -> void
   end
 
   # Response Objects

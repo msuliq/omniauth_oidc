@@ -138,4 +138,57 @@ class TestJwksCache < Minitest::Test
     OmniauthOidc::JwksCache.invalidate(@jwks_uri)
     refute OmniauthOidc::JwksCache.instance.valid?(@jwks_uri)
   end
+
+  def test_slow_fetch_does_not_block_hits_for_other_keys
+    @cache.fetch("https://fast.example/jwks") { @test_keys }
+    started = Queue.new
+    release = Queue.new
+    slow = Thread.new do
+      @cache.fetch("https://slow.example/jwks") do
+        started << true
+        release.pop
+        @test_keys
+      end
+    end
+    started.pop
+
+    hit = Thread.new { @cache.fetch("https://fast.example/jwks") { flunk "should be a cache hit" } }
+    assert hit.join(1), "cache hit blocked behind a fetch for another key"
+  ensure
+    release << true
+    slow&.join
+  end
+
+  def test_concurrent_misses_for_same_key_fetch_once
+    calls = 0
+    threads = 5.times.map do
+      Thread.new do
+        @cache.fetch(@jwks_uri) do
+          calls += 1
+          sleep 0.05
+          @test_keys
+        end
+      end
+    end
+    threads.each(&:join)
+
+    assert_equal 1, calls
+  end
+
+  def test_force_refresh_reuses_entry_younger_than_min_age
+    @cache.fetch(@jwks_uri) { @test_keys }
+
+    result = @cache.fetch(@jwks_uri, force_refresh: true, min_age: 60) { flunk "should not refetch" }
+
+    assert_equal @test_keys, result
+  end
+
+  def test_per_call_ttl_overrides_default
+    @cache.fetch(@jwks_uri) { @test_keys }
+    calls = 0
+
+    @cache.fetch(@jwks_uri, ttl: 0) { calls += 1 }
+
+    assert_equal 1, calls
+  end
 end
