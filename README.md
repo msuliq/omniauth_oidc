@@ -2,7 +2,7 @@
 
 OmniAuth strategy for OpenID Connect (OIDC) authentication. Supports multiple OIDC providers, PKCE, JWKS key rotation, and both `code` and `id_token` response types.
 
-Minimal dependencies: only `omniauth` and `jwt` gems required. All HTTP requests use Ruby's built-in `Net::HTTP` — no Faraday, HTTParty, or other external HTTP clients.
+Minimal dependencies: only `omniauth` and `jwt` gems required. All HTTP requests use Ruby's built-in `Net::HTTP`, with no Faraday, HTTParty, or other external HTTP clients.
 
 Developed with reference to [omniauth-openid-connect](https://github.com/jjbohn/omniauth-openid-connect) and [omniauth_openid_connect](https://github.dev/omniauth/omniauth_openid_connect).
 
@@ -50,7 +50,6 @@ Devise.setup do |config|
     name: :simple_provider,
     scope: %w[openid email profile address],
     response_type: :code,
-    uid_field: "preferred_username",
     client_options: {
       identifier: '23575f4602bebbd9a17dbc38d85bd1a77',
       secret: ENV['SIMPLE_PROVIDER_CLIENT_SECRET'],
@@ -73,10 +72,11 @@ Rails.application.config.middleware.use OmniAuth::Builder do
     require_state: true,
     response_mode: :query,
     prompt: :login,
-    send_nonce: false,
-    uid_field: "sub",
-    pkce: false,
+    send_nonce: true, # always on for response_type 'id_token'
+    pkce: true, # default since 1.1.0
     jwks_cache_ttl: 3600, # JWKS cache TTL in seconds (default: 3600)
+    discovery_cache_ttl: 3600, # Discovery document cache TTL in seconds (default: 3600)
+    clock_skew_leeway: 60, # Allowed clock drift in seconds for exp/nbf (default: 60)
     client_options: {
       identifier: '23575f4602bebbd9a17dbc38d85bd1a77',
       secret: ENV['COMPLEX_PROVIDER_CLIENT_SECRET'],
@@ -271,13 +271,13 @@ OmniauthOidc::Logging.logger = Rails.logger
 
 If ActiveSupport::Notifications is available (e.g. in Rails), the gem publishes instrumentation events:
 
-- `config.fetch.omniauth_oidc` — OIDC discovery document fetch
-- `token.exchange.omniauth_oidc` — authorization code to token exchange
-- `userinfo.fetch.omniauth_oidc` — userinfo endpoint call
-- `jwks.fetch.omniauth_oidc` — JWKS fetch
-- `request_phase.start.omniauth_oidc` — authorization redirect
-- `callback_phase.start.omniauth_oidc` — callback processing
-- `id_token.verify.omniauth_oidc` — ID token verification
+- `config.fetch.omniauth_oidc`: OIDC discovery document fetch
+- `token.exchange.omniauth_oidc`: authorization code to token exchange
+- `userinfo.fetch.omniauth_oidc`: userinfo endpoint call
+- `jwks.fetch.omniauth_oidc`: JWKS fetch
+- `request_phase.start.omniauth_oidc`: authorization redirect
+- `callback_phase.start.omniauth_oidc`: callback processing
+- `id_token.verify.omniauth_oidc`: ID token verification
 
 ### Error Handling
 
@@ -286,18 +286,42 @@ The gem raises specific error classes that you can rescue in your callback handl
 | Error Class | When Raised |
 |---|---|
 | `OmniauthOidc::MissingConfigurationError` | Required options (`identifier`, `secret`, `config_endpoint`) are missing |
-| `OmniauthOidc::ConfigurationError` | OIDC discovery endpoint fetch fails |
-| `OmniauthOidc::TokenError` | Token exchange fails |
-| `OmniauthOidc::TokenVerificationError` | JWT format is invalid |
-| `OmniauthOidc::TokenExpiredError` | ID token `exp` claim is in the past |
-| `OmniauthOidc::InvalidAlgorithmError` | JWT algorithm does not match `client_signing_alg` |
+| `OmniauthOidc::ConfigurationError` | OIDC discovery endpoint fetch fails, the discovery document has no `issuer` or `authorization_endpoint`, or an option is invalid (negative `clock_skew_leeway`, empty HMAC secret) |
+| `OmniauthOidc::TokenError` | Token exchange fails, or PKCE is enabled and no code verifier is stored in the session |
+| `OmniauthOidc::TokenVerificationError` | JWT format is invalid, the ID token has no numeric `exp` claim, or no subject (`sub`) could be determined |
+| `OmniauthOidc::TokenExpiredError` | ID token `exp` claim is in the past, beyond `clock_skew_leeway` |
+| `OmniauthOidc::InvalidAlgorithmError` | JWT algorithm is not accepted (see [Security Defaults](#security-defaults)) |
 | `OmniauthOidc::InvalidSignatureError` | JWT signature verification fails |
 | `OmniauthOidc::InvalidIssuerError` | ID token `iss` does not match expected issuer |
 | `OmniauthOidc::InvalidAudienceError` | ID token `aud` does not match client identifier |
-| `OmniauthOidc::InvalidNonceError` | ID token `nonce` does not match stored nonce |
+| `OmniauthOidc::InvalidNonceError` | ID token `nonce` does not match the stored nonce, or no nonce is stored when one is required |
 | `OmniauthOidc::JwksFetchError` | JWKS endpoint fetch fails |
 
 All error classes inherit from `OmniauthOidc::Error < RuntimeError`.
+
+During the request and callback phases these errors do not propagate as exceptions. They are passed to OmniAuth's
+failure handler, which by default redirects to `/auth/failure?message=<key>` with one of these keys: `csrf_detected`,
+`missing_code`, `missing_id_token`, `token_error`, `http_error`, `timeout`, `failed_to_connect`, `configuration_error`
+or `jwks_error`. The exception itself is available in `request.env['omniauth.error']`.
+
+### Security Defaults
+
+The gem verifies every ID token as required by [OIDC Core 3.1.3.7](https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation):
+
+- **Signature and algorithm**: the accepted algorithms come from configuration, never from the token header. They are
+  `client_signing_alg` when set, otherwise the provider's `id_token_signing_alg_values_supported`, otherwise `RS256`.
+  Unsigned (`alg: none`) tokens are always rejected, and an empty HMAC secret is refused.
+- **Claims**: `iss` must equal the discovery `issuer`, `aud` must contain the client `identifier`, `exp` is required,
+  and `exp`/`nbf` allow `clock_skew_leeway` seconds of drift.
+- **Nonce**: generated per login and stored in the session. It is required when `send_nonce` is on (the default) and
+  always for `response_type: 'id_token'`. It is never read from request parameters.
+- **PKCE**: on by default. The code verifier is read only from the session.
+- **UserInfo**: the response is used only when its `sub` matches the ID token `sub` (OIDC Core 5.3.4).
+- **HTTP**: requests time out after 5s (connect) and 10s (read). Redirects never downgrade from HTTPS to HTTP, and the
+  `Authorization` header is dropped when a redirect leaves the original host.
+- **Caching**: the discovery document and JWKS are cached per process. An ID token with an unknown `kid` triggers at
+  most one JWKS refresh per minute, so signing key rotation is picked up without letting forged tokens flood the
+  provider.
 
 ### Advanced Configuration
 
@@ -308,7 +332,7 @@ You can customize the OIDC strategy further by adding additional configuration o
 | name                         | Arbitrary string to identify OIDC provider and segregate it from other OIDC providers                                                                                 | no                      | `"oidc"`                            | `:simple_provider`                                    |
 | issuer                       | Root url for the OIDC authorization server                                                                                                                            | no                      | retrieved from config_endpoint      | `"https://simpleprovider.com"`                        |
 | fetch_user_info              | Fetches user information from userinfo endpoint using the access token. If false, user info is extracted from ID token claims                                          | no                      | `true`                              | `fetch_user_info: false`                              |
-| client_signing_alg           | Expected JWT signing algorithm. If set, tokens signed with a different algorithm are rejected                                                                          | no                      | `nil` (any algorithm accepted)      | `"RS256"`, `"HS256"`                                  |
+| client_signing_alg           | Expected JWT signing algorithm. Tokens signed with any other algorithm are rejected                                                                                     | no                      | `nil` (provider-advertised, else RS256) | `"RS256"`, `"HS256"`                                  |
 | scope                        | OIDC scopes to request. Accepts Array or String; always sent as a space-delimited string                                                                              | `openid` is required    | all scopes offered by OIDC provider | `%w[openid profile email]`                            |
 | response_type                | OAuth2 response type expected from OIDC provider during authorization                                                                                                 | no                      | `"code"`                            | `"code"` or `"id_token"`                              |
 | state                        | Value to be used for the OAuth2 state parameter on the authorization request. Can be a proc that generates a string                                                   | no                      | Random 16 character string          | `Proc.new { SecureRandom.hex(32) }`                   |
@@ -316,21 +340,23 @@ You can customize the OIDC strategy further by adding additional configuration o
 | response_mode                | The response mode per [OIDC spec](https://openid.net/specs/oauth-v2-form-post-response-mode-1_0.html)                                                                 | no                      | `nil`                               | `:query`, `:fragment`, `:form_post` or `:web_message` |
 | display                      | Specifies how OIDC authorization server should display the authentication and consent UI pages to the end user                                                        | no                      | `nil`                               | `:page`, `:popup`, `:touch` or `:wap`                 |
 | prompt                       | Specifies whether the OIDC authorization server prompts the end user for reauthentication and consent                                                                 | no                      | `nil`                               | `:none`, `:login`, `:consent` or `:select_account`    |
-| send_nonce                   | Include a nonce in the authorization request and verify it in the ID token                                                                                            | no                      | `true`                              | `true` or `false`                                     |
+| send_nonce                   | Include a nonce in the authorization request and require it in the ID token. Always on for `response_type: 'id_token'`                                                  | no                      | `true`                              | `true` or `false`                                     |
 | send_scope_to_token_endpoint | Should the scope parameter be sent to the authorization token endpoint                                                                                                | no                      | `true`                              | `true` or `false`                                     |
 | post_logout_redirect_uri     | Logout redirect uri to use per the [session management draft](https://openid.net/specs/openid-connect-session-1_0.html)                                               | no                      | `nil`                               | `"https://your_app.com/logout/callback"`              |
-| uid_field                    | Field of the user info response to be used as a unique ID                                                                                                             | no                      | `"sub"`                             | `"sub"` or `"preferred_username"`                     |
+| uid_field                    | **Deprecated**, removed in 2.0.0. Has never had an effect: the uid is always the `sub` claim                                                                            | no                      | `"sub"`                             | Remove from configuration                             |
 | extra_authorize_params       | Hash of extra fixed parameters that will be merged to the authorization request                                                                                       | no                      | `{}`                                | `{"tenant" => "common"}`                              |
 | allow_authorize_params       | List of allowed dynamic parameters that will be merged to the authorization request                                                                                   | no                      | `[]`                                | `[:screen_name]`                                      |
-| pkce                         | Enable [PKCE flow](https://oauth.net/2/pkce/)                                                                                                                         | no                      | `false`                             | `true` or `false`                                     |
+| pkce                         | Enable [PKCE flow](https://oauth.net/2/pkce/)                                                                                                                           | no                      | `true`                              | `true` or `false`                                     |
 | pkce_verifier                | Specify custom PKCE verifier code                                                                                                                                     | no                      | Random 128-character string         | `Proc.new { SecureRandom.hex(64) }`                   |
-| pkce_options                 | Specify custom implementation of the PKCE code challenge/method                                                                                                       | no                      | SHA256(code_challenge) in hex       | Proc to customise the code challenge generation       |
+| pkce_options                 | Specify custom implementation of the PKCE code challenge/method                                                                                                         | no                      | S256 (base64url SHA-256 of verifier) | Proc to customise the code challenge generation       |
 | client_options               | Hash of client options detailed below in a separate table                                                                                                             | yes                     | see below                           | see below                                             |
 | jwt_secret_base64            | Specify the base64-encoded secret used to sign the JWT token for HMAC with SHA2 (e.g. HS256) signing algorithms                                                       | no                      | `client_options.secret`             | `"bXlzZWNyZXQ=\n"`                                    |
 | client_jwk_signing_key       | JWK or JWKS (as JSON string or Hash) for local signature verification without fetching from `jwks_uri`                                                                | no                      | `nil`                               | `'{"kty":"RSA","n":"...","e":"AQAB"}'`                |
 | client_x509_signing_key      | X.509 certificate (PEM format) for local signature verification                                                                                                       | no                      | `nil`                               | PEM string                                            |
 | logout_path                  | Log out is only triggered when the request path ends on this path                                                                                                     | no                      | `"/logout"`                         | `"/sign_out"`                                         |
-| jwks_cache_ttl               | JWKS cache time-to-live in seconds                                                                                                                                    | no                      | `3600` (1 hour)                     | `7200`                                                |
+| jwks_cache_ttl               | JWKS cache time-to-live in seconds, shared by all requests in the process                                                                                               | no                      | `3600` (1 hour)                     | `7200`                                                |
+| discovery_cache_ttl          | Discovery document cache time-to-live in seconds, shared by all requests in the process                                                                                 | no                      | `3600` (1 hour)                     | `0` to disable                                        |
+| clock_skew_leeway            | Seconds of clock drift allowed when checking the ID token `exp` and `nbf` claims                                                                                      | no                      | `60`                                | `0` to disable                                        |
 | hd                           | Google-specific: hosted domain parameter                                                                                                                              | no                      | `nil`                               | `"example.com"`                                       |
 | max_age                      | Maximum authentication age in seconds                                                                                                                                 | no                      | `nil`                               | `3600`                                                |
 | acr_values                   | Authentication Class Reference (ACR) values per [RFC9470](https://www.rfc-editor.org/rfc/rfc9470.html)                                                                | no                      | `nil`                               | `"c1 c2"`                                             |

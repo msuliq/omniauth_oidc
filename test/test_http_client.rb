@@ -3,6 +3,8 @@
 require "test_helper"
 
 class TestHttpClient < Minitest::Test
+  include SingletonStub
+
   def setup
     WebMock.reset!
   end
@@ -95,5 +97,49 @@ class TestHttpClient < Minitest::Test
       OmniauthOidc::HttpClient.get("https://example.com/bad")
     end
     assert_match(/Failed to parse JSON/, error.message)
+  end
+
+  def test_get_refuses_https_to_http_redirect
+    stub_request(:get, "https://example.com/userinfo")
+      .to_return(status: 302, headers: { "Location" => "http://example.com/userinfo" })
+
+    error = assert_raises(OmniauthOidc::HttpClient::HttpError) do
+      OmniauthOidc::HttpClient.get("https://example.com/userinfo", headers: { "Authorization" => "Bearer secret" })
+    end
+    assert_match(/non-HTTPS/, error.message)
+    assert_not_requested :get, "http://example.com/userinfo"
+  end
+
+  def test_get_keeps_authorization_on_same_origin_redirect
+    stub_request(:get, "https://example.com/old")
+      .to_return(status: 302, headers: { "Location" => "/new" })
+    stub_request(:get, "https://example.com/new").with(headers: { "Authorization" => "Bearer secret" })
+                                                 .to_return(status: 200, body: "{}")
+
+    OmniauthOidc::HttpClient.get("https://example.com/old", headers: { "Authorization" => "Bearer secret" })
+  end
+
+  def test_get_drops_authorization_on_cross_origin_redirect
+    stub_request(:get, "https://example.com/userinfo")
+      .to_return(status: 302, headers: { "Location" => "https://other.example/collect" })
+    stub_request(:get, "https://other.example/collect").to_return(status: 200, body: "{}")
+
+    OmniauthOidc::HttpClient.get("https://example.com/userinfo", headers: { "Authorization" => "Bearer secret" })
+
+    assert_requested(:get, "https://other.example/collect") { |req| !req.headers.key?("Authorization") }
+  end
+
+  def test_requests_set_explicit_timeouts
+    captured = nil
+    fake_start = lambda do |*_args, **opts, &_block|
+      captured = opts
+      raise Net::OpenTimeout
+    end
+
+    with_singleton_stub(Net::HTTP, :start, fake_start) do
+      assert_raises(Net::OpenTimeout) { OmniauthOidc::HttpClient.get("https://example.com/data") }
+    end
+    assert_equal 5, captured[:open_timeout]
+    assert_equal 10, captured[:read_timeout]
   end
 end

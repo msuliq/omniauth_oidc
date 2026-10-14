@@ -33,7 +33,8 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
 
   # Runtime dependencies
-  spec.add_dependency "jwt", ">= 2.7", "< 4.0"
+  # Excludes releases affected by CVE-2026-45363 (empty-key HMAC bypass): fixed in 2.10.3 and 3.2.0
+  spec.add_dependency "jwt", ">= 2.10.3", "!= 3.0.0", "!= 3.1.0", "!= 3.1.1", "!= 3.1.2", "< 4.0"
   spec.add_dependency "omniauth", "~> 2.1"
 
   # Ruby 4.0+ compatibility - ostruct no longer in default gems

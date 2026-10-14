@@ -7,12 +7,12 @@ module OmniAuth
       module Request
         def request_phase
           OmniauthOidc::Logging.instrument("request_phase.start", provider: name) do
-            @identifier = client_options.identifier
-            @secret = secret
-
             set_client_options_for_request_phase
             redirect authorize_uri
           end
+        rescue OmniauthOidc::ConfigurationError => e
+          OmniauthOidc::Logging.error("Configuration error", error: e.class.name, message: e.message)
+          fail!(:configuration_error, e)
         end
 
         def authorize_uri # rubocop:disable Metrics/AbcSize
@@ -50,7 +50,7 @@ module OmniAuth
             ui_locales: params["ui_locales"],
             claims_locales: params["claims_locales"],
             prompt: options.prompt,
-            nonce: (new_nonce if options.send_nonce),
+            nonce: (new_nonce if nonce_required?),
             hd: options.hd,
             acr_values: options.acr_values
           }
@@ -75,7 +75,7 @@ module OmniAuth
           client_options.userinfo_endpoint = config.userinfo_endpoint
           client_options.jwks_uri = config.jwks_uri
 
-          return unless config.respond_to?(:end_session_endpoint) && config.end_session_endpoint
+          return unless config.end_session_endpoint
 
           client_options.end_session_endpoint = config.end_session_endpoint
         end

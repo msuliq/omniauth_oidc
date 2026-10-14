@@ -10,9 +10,37 @@ require "rack/test"
 # Disable real HTTP requests
 WebMock.disable_net_connect!(allow_localhost: true)
 
+# Keep test output readable; test_logging installs its own logger
+OmniAuth.config.logger = Logger.new(IO::NULL)
+OmniauthOidc::Logging.logger = Logger.new(IO::NULL)
+
+# Temporarily replaces a singleton method. Used instead of minitest/mock, which
+# minitest 6 moved into a separate gem.
+module SingletonStub
+  def with_singleton_stub(object, method_name, implementation)
+    original = object.method(method_name)
+    object.define_singleton_method(method_name, &implementation)
+    yield
+  ensure
+    object.define_singleton_method(method_name, original)
+  end
+end
+
 module OmniAuthTestHelper # rubocop:disable Metrics/ModuleLength
-  def app
-    opts = test_strategy_options
+  # Generated once: RSA key generation is slow
+  TEST_RSA_KEY = OpenSSL::PKey::RSA.new(2048)
+  TEST_KID = "test_key_id"
+
+  # Discovery and JWKS caches are process-wide, so reset them between tests
+  def before_setup
+    super
+    OmniauthOidc::JwksCache.clear!
+    OmniauthOidc::ConfigFetcher.clear_cache!
+    WebMock.reset!
+  end
+
+  def app(**overrides)
+    opts = strategy_options.merge(overrides)
     Rack::Builder.new do
       use OmniAuth::Test::PhonySession
       use OmniAuth::Builder do
@@ -24,7 +52,7 @@ module OmniAuthTestHelper # rubocop:disable Metrics/ModuleLength
     end.to_app
   end
 
-  def test_strategy_options
+  def strategy_options
     {
       name: :oidc,
       client_options: {
@@ -53,18 +81,8 @@ module OmniAuthTestHelper # rubocop:disable Metrics/ModuleLength
     }
   end
 
-  def mock_jwks
-    {
-      "keys" => [
-        {
-          "kty" => "RSA",
-          "use" => "sig",
-          "kid" => "test_key_id",
-          "n" => "xGOr-H7A-PWGdN6bFJcS1AHj8SQj1LQJ0jZFqvTZ7bJC7dPCOZqZ4dBIp5Z2N_kPQ7cO8CqL5Qg0ZJYzV8bQw",
-          "e" => "AQAB"
-        }
-      ]
-    }
+  def mock_jwks(key: TEST_RSA_KEY, kid: TEST_KID)
+    { "keys" => [JWT::JWK.new(key, kid: kid).export.merge(use: "sig")] }
   end
 
   def mock_user_info
@@ -83,35 +101,38 @@ module OmniAuthTestHelper # rubocop:disable Metrics/ModuleLength
     }
   end
 
-  def generate_test_id_token(claims = {})
-    default_claims = {
+  def id_token_claims(overrides = {})
+    {
       "iss" => "https://example.com",
       "sub" => "user123",
       "aud" => "test_client_id",
       "exp" => Time.now.to_i + 3600,
       "iat" => Time.now.to_i,
       "nonce" => "test_nonce"
-    }
-    JSON::JWT.new(default_claims.merge(claims)).to_s
+    }.merge(overrides)
   end
 
-  def stub_oidc_config_request
+  def generate_test_id_token(claims = {}, key: TEST_RSA_KEY, algorithm: "RS256", kid: TEST_KID)
+    JWT.encode(id_token_claims(claims), key, algorithm, kid ? { kid: kid } : {})
+  end
+
+  def stub_oidc_config_request(config = mock_oidc_config)
     stub_request(:get, "https://example.com/.well-known/openid-configuration")
-      .to_return(status: 200, body: mock_oidc_config.to_json, headers: { "Content-Type" => "application/json" })
+      .to_return(status: 200, body: config.to_json, headers: { "Content-Type" => "application/json" })
   end
 
-  def stub_jwks_request
+  def stub_jwks_request(jwks = mock_jwks)
     stub_request(:get, "https://example.com/oauth/jwks")
-      .to_return(status: 200, body: mock_jwks.to_json, headers: { "Content-Type" => "application/json" })
+      .to_return(status: 200, body: jwks.to_json, headers: { "Content-Type" => "application/json" })
   end
 
-  def stub_token_request(response_body = {})
+  def stub_token_request(response_body = {}, id_token_claims: {})
     default_response = {
       "access_token" => "test_access_token",
       "token_type" => "Bearer",
       "expires_in" => 3600,
       "refresh_token" => "test_refresh_token",
-      "id_token" => generate_test_id_token,
+      "id_token" => generate_test_id_token(id_token_claims),
       "scope" => "openid profile email"
     }
 
